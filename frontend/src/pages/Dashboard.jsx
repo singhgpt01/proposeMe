@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db } from '../firebase';
 import { signOut } from 'firebase/auth';
-import { collection, addDoc, query, where, getDocs, orderBy, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs, orderBy, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { generateProposal } from '../api';
-import { LogOut, PlusCircle, FileText, Loader, Send } from 'lucide-react';
+import { LogOut, PlusCircle, FileText, Loader, Send, Trash2, Download, Check, X } from 'lucide-react';
+import { jsPDF } from 'jspdf';
 
 const Dashboard = ({ user }) => {
   const [formData, setFormData] = useState({
@@ -21,6 +22,10 @@ const Dashboard = ({ user }) => {
   const [proposals, setProposals] = useState([]);
   const [loadingProposals, setLoadingProposals] = useState(true);
   const [selectedProposal, setSelectedProposal] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedContent, setEditedContent] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     fetchProposals();
@@ -124,6 +129,127 @@ const Dashboard = ({ user }) => {
     }
   };
 
+  const handleDelete = async (id, e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    
+    if (!db) {
+      alert("Database not initialized.");
+      return;
+    }
+    
+    try {
+      await deleteDoc(doc(db, 'proposals', id));
+      setProposals(prev => prev.filter(p => p.id !== id));
+      if (selectedProposal?.id === id) setSelectedProposal(null);
+      setDeletingId(null);
+    } catch (error) {
+      console.error("CRITICAL: Error deleting proposal:", error);
+      alert("Failed to delete proposal: " + error.message);
+    }
+  };
+
+  const handleEditClick = () => {
+    setEditedContent(selectedProposal.content);
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    setIsSaving(true);
+    try {
+      await updateDoc(doc(db, 'proposals', selectedProposal.id), {
+        content: editedContent,
+        updatedAt: serverTimestamp()
+      });
+      
+      // Update local state
+      setProposals(prev => prev.map(p => 
+        p.id === selectedProposal.id ? { ...p, content: editedContent } : p
+      ));
+      setSelectedProposal(prev => ({ ...prev, content: editedContent }));
+      setIsEditing(false);
+    } catch (error) {
+      console.error("Error updating proposal:", error);
+      alert("Failed to save changes.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const exportToPDF = () => {
+    try {
+      console.log("Starting PDF export for:", selectedProposal.title);
+      const pdfDoc = new jsPDF();
+      const margin = 20;
+      const pageWidth = pdfDoc.internal.pageSize.getWidth();
+      const pageHeight = pdfDoc.internal.pageSize.getHeight();
+      const contentWidth = pageWidth - (2 * margin);
+      
+      // Title
+      pdfDoc.setFontSize(22);
+      pdfDoc.setTextColor(51, 65, 85);
+      pdfDoc.text(selectedProposal.title || "Proposal", margin, 30);
+      
+      // Metadata
+      pdfDoc.setFontSize(12);
+      pdfDoc.setTextColor(100, 116, 139);
+      pdfDoc.text(`Client: ${selectedProposal.clientName || 'N/A'}`, margin, 40);
+      
+      let dateStr = "N/A";
+      if (selectedProposal.createdAt) {
+        try {
+          const date = selectedProposal.createdAt.toDate ? selectedProposal.createdAt.toDate() : new Date(selectedProposal.createdAt);
+          dateStr = date.toLocaleDateString();
+        } catch (e) {
+          console.warn("Date conversion failed", e);
+        }
+      }
+      pdfDoc.text(`Date: ${dateStr}`, margin, 47);
+      
+      // Line
+      pdfDoc.setDrawColor(226, 232, 240);
+      pdfDoc.line(margin, 55, pageWidth - margin, 55);
+      
+      // Content
+      pdfDoc.setFontSize(11);
+      pdfDoc.setTextColor(30, 41, 59);
+      
+      const splitText = pdfDoc.splitTextToSize(selectedProposal.content || "", contentWidth);
+      
+      let cursorY = 65;
+      const lineHeight = 7;
+      
+      splitText.forEach(line => {
+        if (cursorY + lineHeight > pageHeight - margin) {
+          pdfDoc.addPage();
+          cursorY = margin;
+        }
+        pdfDoc.text(line, margin, cursorY);
+        cursorY += lineHeight;
+      });
+      
+      const fileName = `${(selectedProposal.title || 'Proposal').replace(/\s+/g, '_')}_${Date.now()}.pdf`;
+      
+      // Manual download trigger for better compatibility
+      const blob = pdfDoc.output('blob');
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      console.log("PDF download triggered successfully.");
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      alert("Failed to generate PDF. Check console for details.");
+    }
+  };
+
   const handleLogout = () => signOut(auth);
 
   return (
@@ -142,14 +268,71 @@ const Dashboard = ({ user }) => {
             >
               ×
             </button>
-            <h2 style={{ marginBottom: '1rem', color: 'var(--primary)' }}>{selectedProposal.title}</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <h2 style={{ margin: 0, color: 'var(--primary)' }}>{selectedProposal.title}</h2>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {!isEditing ? (
+                  <>
+                    <button 
+                      className="btn btn-outline" 
+                      onClick={handleEditClick}
+                      title="Edit Proposal"
+                      style={{ padding: '0.5rem' }}
+                    >
+                      ✏️ Edit
+                    </button>
+                    <button 
+                      className="btn btn-primary" 
+                      onClick={exportToPDF}
+                      style={{ padding: '0.5rem 1rem' }}
+                    >
+                      <Download size={16} /> Export PDF
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button 
+                      className="btn btn-primary" 
+                      onClick={handleSaveEdit}
+                      disabled={isSaving}
+                      style={{ padding: '0.5rem 1rem' }}
+                    >
+                      {isSaving ? <Loader className="spin" size={16} /> : <Check size={16} />}
+                      Save
+                    </button>
+                    <button 
+                      className="btn btn-outline" 
+                      onClick={() => setIsEditing(false)}
+                      style={{ padding: '0.5rem 1rem' }}
+                    >
+                      <X size={16} /> Cancel
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
             <p style={{ color: 'var(--text-light)', marginBottom: '1.5rem' }}>
               For: {selectedProposal.clientName}
             </p>
             <hr style={{ marginBottom: '1.5rem', border: '0', borderTop: '1px solid #eee' }} />
-            <div style={{ whiteSpace: 'pre-wrap', textAlign: 'left', lineHeight: '1.6' }}>
-              {selectedProposal.content}
-            </div>
+            
+            {isEditing ? (
+              <textarea
+                style={{ 
+                  ...inputStyle, 
+                  height: '400px', 
+                  fontSize: '1rem', 
+                  lineHeight: '1.6',
+                  padding: '1rem'
+                }}
+                value={editedContent}
+                onChange={(e) => setEditedContent(e.target.value)}
+              />
+            ) : (
+              <div style={{ whiteSpace: 'pre-wrap', textAlign: 'left', lineHeight: '1.6' }}>
+                {selectedProposal.content}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -251,9 +434,41 @@ const Dashboard = ({ user }) => {
                       <strong style={{ display: 'block', fontSize: '1.1rem' }}>{proposal.title}</strong>
                       <span style={{ fontSize: '0.85rem', color: 'var(--text-light)' }}>Client: {proposal.clientName}</span>
                     </div>
-                    <button className="btn btn-outline" onClick={() => setSelectedProposal(proposal)}>
-                      View
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      {deletingId === proposal.id ? (
+                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', backgroundColor: '#fee2e2', padding: '0.3rem 0.6rem', borderRadius: 'var(--border-radius)', border: '1px solid #fecaca' }}>
+                          <span style={{ fontSize: '0.8rem', color: '#991b1b', fontWeight: 'bold' }}>Delete?</span>
+                          <button 
+                            className="btn btn-primary" 
+                            onClick={(e) => handleDelete(proposal.id, e)}
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', backgroundColor: '#ef4444' }}
+                          >
+                            Yes
+                          </button>
+                          <button 
+                            className="btn btn-outline" 
+                            onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
+                          >
+                            No
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <button className="btn btn-outline" onClick={() => setSelectedProposal(proposal)}>
+                            View
+                          </button>
+                          <button 
+                            className="btn btn-outline" 
+                            onClick={(e) => { e.stopPropagation(); setDeletingId(proposal.id); }}
+                            style={{ color: '#ef4444', borderColor: '#fee2e2' }}
+                            title="Delete Proposal"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
