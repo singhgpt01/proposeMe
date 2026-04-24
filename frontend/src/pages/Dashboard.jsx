@@ -3,7 +3,12 @@ import { auth, db } from '../firebase';
 import { signOut } from 'firebase/auth';
 import { collection, addDoc, query, where, getDocs, orderBy, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { generateProposal } from '../api';
-import { LogOut, PlusCircle, FileText, Loader, Send, Trash2, Download, Check, X } from 'lucide-react';
+import { 
+  LogOut, PlusCircle, FileText, Loader, Send, Trash2, 
+  Download, Check, X, User, Briefcase, AlignLeft, 
+  Layers, Clock, DollarSign, MessageSquare, Search,
+  Eye, FileEdit, LayoutDashboard, ChevronRight
+} from 'lucide-react';
 import { jsPDF } from 'jspdf';
 
 const Dashboard = ({ user }) => {
@@ -26,6 +31,7 @@ const Dashboard = ({ user }) => {
   const [editedContent, setEditedContent] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     fetchProposals();
@@ -65,14 +71,8 @@ const Dashboard = ({ user }) => {
       return;
     }
 
-    if (!db) {
-      alert("Database is not initialized.");
-      return;
-    }
-
     setIsGenerating(true);
     try {
-      // Build structured prompt
       const structuredPrompt = `
         Generate a professional business proposal with the following details:
         - Proposal Title: ${formData.title}
@@ -108,7 +108,6 @@ const Dashboard = ({ user }) => {
         createdAt: serverTimestamp()
       });
 
-      // Reset form
       setFormData({
         title: '',
         clientName: '',
@@ -130,24 +129,15 @@ const Dashboard = ({ user }) => {
   };
 
   const handleDelete = async (id, e) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    
-    if (!db) {
-      alert("Database not initialized.");
-      return;
-    }
-    
+    if (e) e.stopPropagation();
     try {
       await deleteDoc(doc(db, 'proposals', id));
       setProposals(prev => prev.filter(p => p.id !== id));
       if (selectedProposal?.id === id) setSelectedProposal(null);
       setDeletingId(null);
     } catch (error) {
-      console.error("CRITICAL: Error deleting proposal:", error);
-      alert("Failed to delete proposal: " + error.message);
+      console.error("Error deleting proposal:", error);
+      alert("Failed to delete proposal.");
     }
   };
 
@@ -163,8 +153,6 @@ const Dashboard = ({ user }) => {
         content: editedContent,
         updatedAt: serverTimestamp()
       });
-      
-      // Update local state
       setProposals(prev => prev.map(p => 
         p.id === selectedProposal.id ? { ...p, content: editedContent } : p
       ));
@@ -180,294 +168,207 @@ const Dashboard = ({ user }) => {
 
   const exportToPDF = () => {
     try {
-      console.log("Starting PDF export for:", selectedProposal.title);
       const pdfDoc = new jsPDF();
       const margin = 20;
       const pageWidth = pdfDoc.internal.pageSize.getWidth();
-      const pageHeight = pdfDoc.internal.pageSize.getHeight();
       const contentWidth = pageWidth - (2 * margin);
       
-      // Title
       pdfDoc.setFontSize(22);
-      pdfDoc.setTextColor(51, 65, 85);
+      pdfDoc.setTextColor(15, 23, 42);
       pdfDoc.text(selectedProposal.title || "Proposal", margin, 30);
       
-      // Metadata
       pdfDoc.setFontSize(12);
       pdfDoc.setTextColor(100, 116, 139);
       pdfDoc.text(`Client: ${selectedProposal.clientName || 'N/A'}`, margin, 40);
       
-      let dateStr = "N/A";
-      if (selectedProposal.createdAt) {
-        try {
-          const date = selectedProposal.createdAt.toDate ? selectedProposal.createdAt.toDate() : new Date(selectedProposal.createdAt);
-          dateStr = date.toLocaleDateString();
-        } catch (e) {
-          console.warn("Date conversion failed", e);
-        }
-      }
-      pdfDoc.text(`Date: ${dateStr}`, margin, 47);
-      
-      // Line
       pdfDoc.setDrawColor(226, 232, 240);
       pdfDoc.line(margin, 55, pageWidth - margin, 55);
       
-      // Content
       pdfDoc.setFontSize(11);
       pdfDoc.setTextColor(30, 41, 59);
-      
       const splitText = pdfDoc.splitTextToSize(selectedProposal.content || "", contentWidth);
+      pdfDoc.text(splitText, margin, 65);
       
-      let cursorY = 65;
-      const lineHeight = 7;
-      
-      splitText.forEach(line => {
-        if (cursorY + lineHeight > pageHeight - margin) {
-          pdfDoc.addPage();
-          cursorY = margin;
-        }
-        pdfDoc.text(line, margin, cursorY);
-        cursorY += lineHeight;
-      });
-      
-      const fileName = `${(selectedProposal.title || 'Proposal').replace(/\s+/g, '_')}_${Date.now()}.pdf`;
-      
-      // Manual download trigger for better compatibility
-      const blob = pdfDoc.output('blob');
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      
-      console.log("PDF download triggered successfully.");
+      pdfDoc.save(`${(selectedProposal.title || 'Proposal').replace(/\s+/g, '_')}.pdf`);
     } catch (error) {
       console.error("Error generating PDF:", error);
-      alert("Failed to generate PDF. Check console for details.");
+      alert("Failed to generate PDF.");
     }
   };
 
-  const handleLogout = () => signOut(auth);
+  const filteredProposals = proposals.filter(p => 
+    p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.clientName.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: 'var(--surface)' }}>
-      {/* Modal for viewing proposal */}
-      {selectedProposal && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 1000, padding: '2rem'
-        }}>
-          <div className="card" style={{ maxWidth: '800px', width: '100%', maxHeight: '90vh', overflowY: 'auto', position: 'relative', padding: '2.5rem' }}>
-            <button
-              onClick={() => setSelectedProposal(null)}
-              style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.5rem', fontWeight: 'bold' }}
-            >
-              ×
-            </button>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <h2 style={{ margin: 0, color: 'var(--primary)' }}>{selectedProposal.title}</h2>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                {!isEditing ? (
-                  <>
-                    <button 
-                      className="btn btn-outline" 
-                      onClick={handleEditClick}
-                      title="Edit Proposal"
-                      style={{ padding: '0.5rem' }}
-                    >
-                      ✏️ Edit
-                    </button>
-                    <button 
-                      className="btn btn-primary" 
-                      onClick={exportToPDF}
-                      style={{ padding: '0.5rem 1rem' }}
-                    >
-                      <Download size={16} /> Export PDF
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button 
-                      className="btn btn-primary" 
-                      onClick={handleSaveEdit}
-                      disabled={isSaving}
-                      style={{ padding: '0.5rem 1rem' }}
-                    >
-                      {isSaving ? <Loader className="spin" size={16} /> : <Check size={16} />}
-                      Save
-                    </button>
-                    <button 
-                      className="btn btn-outline" 
-                      onClick={() => setIsEditing(false)}
-                      style={{ padding: '0.5rem 1rem' }}
-                    >
-                      <X size={16} /> Cancel
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            <p style={{ color: 'var(--text-light)', marginBottom: '1.5rem' }}>
-              For: {selectedProposal.clientName}
-            </p>
-            <hr style={{ marginBottom: '1.5rem', border: '0', borderTop: '1px solid #eee' }} />
-            
-            {isEditing ? (
-              <textarea
-                style={{ 
-                  ...inputStyle, 
-                  height: '400px', 
-                  fontSize: '1rem', 
-                  lineHeight: '1.6',
-                  padding: '1rem'
-                }}
-                value={editedContent}
-                onChange={(e) => setEditedContent(e.target.value)}
-              />
-            ) : (
-              <div style={{ whiteSpace: 'pre-wrap', textAlign: 'left', lineHeight: '1.6' }}>
-                {selectedProposal.content}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Header */}
-      <header style={{ backgroundColor: 'var(--white)', padding: '1rem 0', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+    <div style={{ minHeight: '100vh', backgroundColor: 'var(--background)', display: 'flex', flexDirection: 'column' }}>
+      {/* Premium Navbar */}
+      <nav className="glass" style={{ position: 'sticky', top: 0, zIndex: 50, padding: '0.75rem 0' }}>
         <div className="container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ margin: 0, color: 'var(--primary)' }}>Proposeme</h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <span style={{ color: 'var(--text-light)', fontSize: '0.9rem' }}>{user.email}</span>
-            <button className="btn btn-outline" onClick={handleLogout} style={{ padding: '0.5rem 1rem' }}>
-              <LogOut size={16} /> Logout
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{ 
+              background: 'var(--accent-gradient)', 
+              width: '32px', height: '32px', 
+              borderRadius: '8px', display: 'flex', 
+              alignItems: 'center', justifyContent: 'center',
+              color: 'white'
+            }}>
+              <FileText size={18} />
+            </div>
+            <h2 style={{ margin: 0, fontSize: '1.25rem', letterSpacing: '-0.025em' }}>
+              Propose<span className="gradient-text">Me</span>
+            </h2>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
+            <div style={{ textAlign: 'right', display: 'none', sm: 'block' }}>
+              <div style={{ fontSize: '0.875rem', fontWeight: 600 }}>{user.displayName || 'User'}</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{user.email}</div>
+            </div>
+            <button className="btn btn-ghost" onClick={() => signOut(auth)} style={{ padding: '0.5rem' }}>
+              <LogOut size={18} />
             </button>
           </div>
         </div>
-      </header>
+      </nav>
 
-      <main className="container" style={{ padding: '2rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem' }}>
+      <main className="container" style={{ padding: '2rem 0', flex: 1 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(400px, 450px) 1fr', gap: '2.5rem', alignItems: 'start' }}>
+          
+          {/* Left: Input Form Card */}
+          <div className="card" style={{ position: 'sticky', top: '5rem' }}>
+            <div style={{ marginBottom: '2rem' }}>
+              <h3 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Create Proposal</h3>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Fill in the details to generate an AI proposal.</p>
+            </div>
 
-          {/* Form Section */}
-          <div className="card">
-            <h3 style={{ marginBottom: '1.5rem' }}>Generate New Proposal</h3>
-            <div style={{ display: 'grid', gap: '1rem' }}>
+            <div style={{ display: 'grid', gap: '1.25rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
-                  <label style={labelStyle}>Proposal Title *</label>
-                  <input style={inputStyle} name="title" value={formData.title} onChange={handleInputChange} placeholder="Website Redesign" />
+                <div className="form-group">
+                  <label style={labelStyle}>Proposal Title</label>
+                  <div style={inputWrapperStyle}>
+                    <Briefcase size={16} style={iconStyle} />
+                    <input style={inputStyle} name="title" value={formData.title} onChange={handleInputChange} placeholder="e.g. UX Audit" />
+                  </div>
                 </div>
-                <div>
-                  <label style={labelStyle}>Client Name *</label>
-                  <input style={inputStyle} name="clientName" value={formData.clientName} onChange={handleInputChange} placeholder="Acme Corp" />
+                <div className="form-group">
+                  <label style={labelStyle}>Client Name</label>
+                  <div style={inputWrapperStyle}>
+                    <User size={16} style={iconStyle} />
+                    <input style={inputStyle} name="clientName" value={formData.clientName} onChange={handleInputChange} placeholder="e.g. Acme Inc" />
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <label style={labelStyle}>Project Type</label>
-                <select style={inputStyle} name="projectType" value={formData.projectType} onChange={handleInputChange}>
-                  <option>Freelance</option>
-                  <option>Business</option>
-                  <option>Marketing</option>
-                  <option>Design</option>
-                  <option>Software Development</option>
-                </select>
+              <div className="form-group">
+                <label style={labelStyle}>Project Category</label>
+                <div style={inputWrapperStyle}>
+                  <Layers size={16} style={iconStyle} />
+                  <select style={inputStyle} name="projectType" value={formData.projectType} onChange={handleInputChange}>
+                    <option>Freelance</option>
+                    <option>Business</option>
+                    <option>Marketing</option>
+                    <option>Software Development</option>
+                  </select>
+                </div>
               </div>
 
-              <div>
-                <label style={labelStyle}>Project Description *</label>
-                <textarea style={{ ...inputStyle, height: '80px' }} name="description" value={formData.description} onChange={handleInputChange} placeholder="What is the project about?" />
-              </div>
-
-              <div>
-                <label style={labelStyle}>Deliverables</label>
-                <textarea style={{ ...inputStyle, height: '60px' }} name="deliverables" value={formData.deliverables} onChange={handleInputChange} placeholder="What will you deliver?" />
+              <div className="form-group">
+                <label style={labelStyle}>Description</label>
+                <textarea style={{ ...inputStyle, height: '100px', padding: '0.75rem' }} name="description" value={formData.description} onChange={handleInputChange} placeholder="Describe the project goal..." />
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div>
+                <div className="form-group">
                   <label style={labelStyle}>Timeline</label>
-                  <input style={inputStyle} name="timeline" value={formData.timeline} onChange={handleInputChange} placeholder="3 Months" />
+                  <div style={inputWrapperStyle}>
+                    <Clock size={16} style={iconStyle} />
+                    <input style={inputStyle} name="timeline" value={formData.timeline} onChange={handleInputChange} placeholder="e.g. 4 weeks" />
+                  </div>
                 </div>
-                <div>
-                  <label style={labelStyle}>Budget (Optional)</label>
-                  <input style={inputStyle} name="budget" value={formData.budget} onChange={handleInputChange} placeholder="$5,000" />
+                <div className="form-group">
+                  <label style={labelStyle}>Budget</label>
+                  <div style={inputWrapperStyle}>
+                    <DollarSign size={16} style={iconStyle} />
+                    <input style={inputStyle} name="budget" value={formData.budget} onChange={handleInputChange} placeholder="Optional" />
+                  </div>
                 </div>
-              </div>
-
-              <div>
-                <label style={labelStyle}>Additional Notes</label>
-                <textarea style={{ ...inputStyle, height: '60px' }} name="additionalNotes" value={formData.additionalNotes} onChange={handleInputChange} placeholder="Any specific requirements?" />
               </div>
 
               <button
                 className="btn btn-primary"
                 onClick={handleGenerate}
                 disabled={isGenerating}
-                style={{ width: '100%', justifyContent: 'center', marginTop: '1rem' }}
+                style={{ width: '100%', marginTop: '1rem', height: '48px', fontSize: '1rem' }}
               >
                 {isGenerating ? <Loader className="spin" size={20} /> : <Send size={20} />}
-                {isGenerating ? 'Generating Proposal...' : 'Generate Proposal'}
+                {isGenerating ? 'Crafting with AI...' : 'Generate Proposal'}
               </button>
             </div>
           </div>
 
-          {/* List Section */}
-          <div>
-            <h3 style={{ marginBottom: '1.5rem' }}>Your Proposals</h3>
+          {/* Right: Saved Proposals List */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Saved Proposals</h3>
+              <div style={{ position: 'relative' }}>
+                <Search size={16} style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <input 
+                  style={{ ...inputStyle, paddingLeft: '2.5rem', width: '250px', backgroundColor: 'var(--surface)' }} 
+                  placeholder="Search proposals..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+
             {loadingProposals ? (
-              <p>Loading...</p>
-            ) : proposals.length === 0 ? (
-              <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
-                <p style={{ color: 'var(--text-light)' }}>No proposals yet.</p>
+              <div style={{ textAlign: 'center', padding: '4rem' }}>
+                <Loader className="spin" size={32} style={{ color: 'var(--accent)' }} />
+                <p style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>Fetching your masterpieces...</p>
+              </div>
+            ) : filteredProposals.length === 0 ? (
+              <div className="card" style={{ textAlign: 'center', padding: '5rem', borderStyle: 'dashed' }}>
+                <div style={{ background: 'var(--background)', width: '64px', height: '64px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}>
+                  <PlusCircle size={32} style={{ color: 'var(--text-muted)' }} />
+                </div>
+                <h4>No proposals found</h4>
+                <p style={{ color: 'var(--text-muted)', maxWidth: '300px', margin: '0.5rem auto' }}>
+                  Generate your first proposal using the form on the left.
+                </p>
               </div>
             ) : (
               <div style={{ display: 'grid', gap: '1rem' }}>
-                {proposals.map(proposal => (
-                  <div key={proposal.id} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <strong style={{ display: 'block', fontSize: '1.1rem' }}>{proposal.title}</strong>
-                      <span style={{ fontSize: '0.85rem', color: 'var(--text-light)' }}>Client: {proposal.clientName}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      {deletingId === proposal.id ? (
-                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', backgroundColor: '#fee2e2', padding: '0.3rem 0.6rem', borderRadius: 'var(--border-radius)', border: '1px solid #fecaca' }}>
-                          <span style={{ fontSize: '0.8rem', color: '#991b1b', fontWeight: 'bold' }}>Delete?</span>
-                          <button 
-                            className="btn btn-primary" 
-                            onClick={(e) => handleDelete(proposal.id, e)}
-                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem', backgroundColor: '#ef4444' }}
-                          >
-                            Yes
-                          </button>
-                          <button 
-                            className="btn btn-outline" 
-                            onClick={(e) => { e.stopPropagation(); setDeletingId(null); }}
-                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
-                          >
-                            No
-                          </button>
+                {filteredProposals.map(proposal => (
+                  <div key={proposal.id} className="card card-hover" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.25rem 1.5rem' }}>
+                    <div style={{ display: 'flex', gap: '1.25rem', alignItems: 'center' }}>
+                      <div style={{ background: 'rgba(79, 70, 229, 0.1)', color: 'var(--accent)', padding: '0.75rem', borderRadius: '12px' }}>
+                        <FileText size={24} />
+                      </div>
+                      <div>
+                        <h4 style={{ fontSize: '1.05rem', marginBottom: '0.25rem' }}>{proposal.title}</h4>
+                        <div style={{ display: 'flex', gap: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <User size={14} /> {proposal.clientName}
+                          </span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                            <Clock size={14} /> {proposal.createdAt?.toDate().toLocaleDateString() || 'Just now'}
+                          </span>
                         </div>
-                      ) : (
-                        <>
-                          <button className="btn btn-outline" onClick={() => setSelectedProposal(proposal)}>
-                            View
-                          </button>
-                          <button 
-                            className="btn btn-outline" 
-                            onClick={(e) => { e.stopPropagation(); setDeletingId(proposal.id); }}
-                            style={{ color: '#ef4444', borderColor: '#fee2e2' }}
-                            title="Delete Proposal"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </>
-                      )}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                      <button className="btn btn-outline" onClick={() => setSelectedProposal(proposal)} style={{ padding: '0.5rem 1rem' }}>
+                        <Eye size={16} /> View
+                      </button>
+                      <button 
+                        className="btn btn-outline" 
+                        onClick={(e) => { e.stopPropagation(); setDeletingId(proposal.id); }}
+                        style={{ color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.1)', padding: '0.5rem' }}
+                      >
+                        <Trash2 size={18} />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -477,30 +378,126 @@ const Dashboard = ({ user }) => {
         </div>
       </main>
 
-      <style>{`
-        .spin { animation: spin 1s linear infinite; }
-        @keyframes spin { 100% { transform: rotate(360deg); } }
-      `}</style>
+      {/* Modern Modal for viewing proposal */}
+      {selectedProposal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(15, 23, 42, 0.4)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 100, padding: '2rem'
+        }}>
+          <div className="card" style={{ maxWidth: '900px', width: '100%', maxHeight: '90vh', overflowY: 'auto', padding: 0, border: 'none', boxShadow: 'var(--shadow-premium)' }}>
+            <div className="glass" style={{ padding: '1.5rem 2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 10 }}>
+              <div>
+                <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>{selectedProposal.title}</h2>
+                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Client: {selectedProposal.clientName}</p>
+              </div>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                {!isEditing ? (
+                  <>
+                    <button className="btn btn-outline" onClick={handleEditClick}>
+                      <FileEdit size={16} /> Edit
+                    </button>
+                    <button className="btn btn-primary" onClick={exportToPDF}>
+                      <Download size={16} /> Export PDF
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="btn btn-primary" onClick={handleSaveEdit} disabled={isSaving}>
+                      {isSaving ? <Loader className="spin" size={16} /> : <Check size={16} />}
+                      Save Changes
+                    </button>
+                    <button className="btn btn-outline" onClick={() => setIsEditing(false)}>
+                      <X size={16} /> Cancel
+                    </button>
+                  </>
+                )}
+                <button 
+                  onClick={() => setSelectedProposal(null)}
+                  style={{ background: 'var(--background)', width: '36px', height: '36px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+
+            <div style={{ padding: '2.5rem' }}>
+              {isEditing ? (
+                <textarea
+                  style={{ 
+                    ...inputStyle, 
+                    height: '500px', 
+                    fontSize: '1rem', 
+                    lineHeight: '1.7',
+                    padding: '1.5rem',
+                    backgroundColor: 'var(--background)',
+                    border: '1px solid var(--border)'
+                  }}
+                  value={editedContent}
+                  onChange={(e) => setEditedContent(e.target.value)}
+                />
+              ) : (
+                <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.8', color: 'var(--text)', fontSize: '1.05rem' }}>
+                  {selectedProposal.content}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Overlay */}
+      {deletingId && (
+        <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="card" style={{ width: '350px', textAlign: 'center' }}>
+            <div style={{ color: 'var(--error)', marginBottom: '1rem' }}><Trash2 size={40} style={{ margin: '0 auto' }} /></div>
+            <h4>Delete Proposal?</h4>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', margin: '0.5rem 0 1.5rem' }}>This action cannot be undone.</p>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button className="btn btn-primary" style={{ backgroundColor: 'var(--error)', flex: 1 }} onClick={() => handleDelete(deletingId)}>Delete</button>
+              <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setDeletingId(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 const labelStyle = {
   display: 'block',
-  fontSize: '0.85rem',
-  fontWeight: '600',
-  marginBottom: '0.4rem',
-  color: 'var(--primary)'
+  fontSize: '0.75rem',
+  fontWeight: '700',
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  marginBottom: '0.5rem',
+  color: 'var(--text-muted)'
+};
+
+const inputWrapperStyle = {
+  position: 'relative',
+  display: 'flex',
+  alignItems: 'center'
+};
+
+const iconStyle = {
+  position: 'absolute',
+  left: '0.75rem',
+  color: 'var(--text-muted)',
+  pointerEvents: 'none'
 };
 
 const inputStyle = {
   width: '100%',
-  padding: '0.6rem',
-  borderRadius: 'var(--border-radius)',
-  border: '1px solid #ddd',
-  fontFamily: 'inherit',
+  padding: '0.625rem 0.75rem 0.625rem 2.5rem',
+  borderRadius: 'var(--radius-md)',
+  border: '1px solid var(--border)',
   fontSize: '0.9rem',
-  outline: 'none'
+  outline: 'none',
+  backgroundColor: 'var(--input-bg)',
+  color: 'var(--text)',
 };
 
 export default Dashboard;
+
