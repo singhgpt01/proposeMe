@@ -2,12 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { auth, db } from '../firebase';
 import { signOut } from 'firebase/auth';
 import { collection, addDoc, query, where, getDocs, orderBy, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
-import { generateProposal } from '../api';
+import { generateProposal, regenerateSection } from '../api';
 import { 
   LogOut, PlusCircle, FileText, Loader, Send, Trash2, 
   Download, Check, X, User, Briefcase, AlignLeft, 
   Layers, Clock, DollarSign, MessageSquare, Search,
-  Eye, FileEdit, LayoutDashboard, ChevronRight
+  Eye, FileEdit, LayoutDashboard, ChevronRight, Copy, RefreshCcw, Save
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 
@@ -15,12 +15,13 @@ const Dashboard = ({ user }) => {
   const [formData, setFormData] = useState({
     title: '',
     clientName: '',
-    projectType: 'Freelance',
+    projectType: 'General Proposal',
     description: '',
     deliverables: '',
     timeline: '',
     budget: '',
-    additionalNotes: ''
+    additionalNotes: '',
+    tone: 'Professional'
   });
 
   const [isGenerating, setIsGenerating] = useState(false);
@@ -32,6 +33,79 @@ const Dashboard = ({ user }) => {
   const [isSaving, setIsSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [currentStep, setCurrentStep] = useState(1);
+  const [generationPhase, setGenerationPhase] = useState(0);
+  const [proposalSections, setProposalSections] = useState([]);
+  const [editingSectionIndex, setEditingSectionIndex] = useState(null);
+  const [isRegeneratingSection, setIsRegeneratingSection] = useState(null);
+  const [showSuccess, setShowSuccess] = useState(false);
+
+  const loadingMessages = [
+    "Analyzing your project...",
+    "Crafting proposal structure...",
+    "Finalizing professional output..."
+  ];
+
+  const sectionHeaders = [
+    "Introduction", "Project Understanding", "Proposed Solution", 
+    "Scope of Work", "Timeline", "Pricing / Budget", 
+    "Terms & Conditions", "Closing Statement",
+    "Design Concept", "Site Analysis", "Technical Stack",
+    "Target Audience", "KPIs & Reporting", "Material Specification",
+    "Safety Standards", "Maintenance & Support"
+  ];
+
+  const typeSpecificInstructions = {
+    "General Proposal": "Create a standard professional business proposal.",
+    "Freelance Proposal": "Focus on personal expertise, individual milestones, and flexible project terms.",
+    "Architecture Proposal": "Include sections for 'Design Concept' and 'Site Analysis'. Focus on spatial planning and structural integrity.",
+    "Interior Design Proposal": "Include sections for 'Design Concept' and 'Material Specification'. Focus on aesthetics, lighting, and mood.",
+    "Web Development Proposal": "Include sections for 'Technical Stack' and 'Maintenance & Support'. Focus on user experience, performance, and security.",
+    "Digital Marketing Proposal": "Include sections for 'Target Audience' and 'KPIs & Reporting'. Focus on ROI, growth strategies, and channel optimization.",
+    "Construction Proposal": "Include sections for 'Safety Standards' and 'Material Sourcing'. Focus on compliance, durability, and timeline precision."
+  };
+
+  const parseProposal = (content) => {
+    if (!content) return [];
+    
+    // Check if it's already an object (from Firestore Map) or JSON string
+    try {
+      const data = typeof content === 'object' ? content : JSON.parse(content);
+      return Object.entries(data).map(([title, content]) => ({ title, content }));
+    } catch (e) {
+      // Fallback to legacy parsing if not JSON
+      const sections = [];
+      let currentTitle = "Overview";
+      let currentContent = "";
+      
+      const lines = content.split('\n');
+      lines.forEach(line => {
+        const cleanLine = line.trim();
+        const matchedHeader = sectionHeaders.find(h => 
+          cleanLine.toLowerCase() === h.toLowerCase() || 
+          cleanLine.match(new RegExp(`^\\d+\\.?\\s*${h.toLowerCase()}$`, 'i'))
+        );
+        
+        if (matchedHeader) {
+          if (currentContent.trim()) {
+            sections.push({ title: currentTitle, content: currentContent.trim() });
+          }
+          currentTitle = matchedHeader;
+          currentContent = "";
+        } else {
+          currentContent += line + "\n";
+        }
+      });
+      
+      if (currentContent.trim()) {
+        sections.push({ title: currentTitle, content: currentContent.trim() });
+      }
+      return sections;
+    }
+  };
+
+  const handleNextStep = () => setCurrentStep(prev => Math.min(prev + 1, 3));
+  const handlePrevStep = () => setCurrentStep(prev => Math.max(prev - 1, 1));
 
   useEffect(() => {
     fetchProposals();
@@ -58,11 +132,12 @@ const Dashboard = ({ user }) => {
       setLoadingProposals(false);
     }
   };
-
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
+
+
 
   const handleGenerate = async () => {
     const { title, clientName, description } = formData;
@@ -72,61 +147,134 @@ const Dashboard = ({ user }) => {
     }
 
     setIsGenerating(true);
+    setGenerationPhase(0);
+    const interval = setInterval(() => {
+      setGenerationPhase(prev => (prev + 1) % 3);
+    }, 2500);
+
     try {
-      const structuredPrompt = `
-        Generate a professional business proposal with the following details:
-        - Proposal Title: ${formData.title}
-        - Client Name: ${formData.clientName}
-        - Project Type: ${formData.projectType}
-        - Project Description: ${formData.description}
-        - Deliverables: ${formData.deliverables}
-        - Timeline: ${formData.timeline}
-        - Budget: ${formData.budget || 'Not specified'}
-        - Additional Notes: ${formData.additionalNotes}
+      const result = await generateProposal({
+        title: formData.title,
+        client_name: formData.clientName,
+        proposal_type: formData.projectType,
+        description: formData.description,
+        deliverables: formData.deliverables,
+        timeline: formData.timeline,
+        budget: formData.budget,
+        additional_notes: formData.additionalNotes,
+        tone: formData.tone
+      });
 
-        The output MUST be divided into these exact sections:
-        1. Introduction
-        2. Project Understanding
-        3. Proposed Solution
-        4. Scope of Work
-        5. Timeline
-        6. Pricing / Budget
-        7. Terms & Conditions
-        8. Closing Statement
+      if (!result || !result.proposal) {
+        throw new Error("AI failed to generate content. Please try again.");
+      }
 
-        Use professional, persuasive language. Use plain text ONLY. DO NOT use markdown, bolding (**), or special symbols. Use clear, simple headings.
-      `;
+      const contentToStore = result.proposal;
+      
+      // Ensure content is not empty object
+      if (typeof contentToStore === 'object' && Object.keys(contentToStore).length === 0) {
+        throw new Error("AI returned empty content. Please refine your description.");
+      }
+      
+      // Attempt to clean/verify JSON if needed, but we'll store as is
+      // and let the parser handle it.
 
-      const result = await generateProposal(structuredPrompt);
-
-      await addDoc(collection(db, 'proposals'), {
+      const docRef = await addDoc(collection(db, 'proposals'), {
         userId: user.uid,
         title: formData.title,
         clientName: formData.clientName,
-        prompt: structuredPrompt,
-        content: result.proposal,
+        prompt: "Generated via Backend",
+        content: contentToStore,
         createdAt: serverTimestamp()
+      });
+
+      setSelectedProposal({
+        id: docRef.id,
+        title: formData.title,
+        clientName: formData.clientName,
+        content: contentToStore,
+        createdAt: { toDate: () => new Date() }
       });
 
       setFormData({
         title: '',
         clientName: '',
-        projectType: 'Freelance',
+        projectType: 'General Proposal',
         description: '',
         deliverables: '',
-        timeline: '',
         budget: '',
-        additionalNotes: ''
+        additionalNotes: '',
+        tone: 'Professional'
       });
+      setCurrentStep(1);
 
       fetchProposals();
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 5000);
     } catch (error) {
       console.error("Error generating proposal:", error);
       alert("Failed to generate proposal: " + error.message);
     } finally {
+      clearInterval(interval);
       setIsGenerating(false);
     }
   };
+
+  const handleRegenerateSection = async (index) => {
+    setIsRegeneratingSection(index);
+    try {
+      const sectionToRegenerate = proposalSections[index].title;
+      const prompt = `
+        Regenerate ONLY the "${sectionToRegenerate}" section for the following project:
+        Title: ${selectedProposal.title}
+        Client: ${selectedProposal.clientName}
+        
+        Keep it professional and aligned with the rest of the proposal.
+        Return ONLY the content of this section, no headers.
+      `;
+      
+      const result = await regenerateSection(prompt);
+      const updatedSections = [...proposalSections];
+      
+      // Handle potential object response from backend fallback
+      const newContent = typeof result.proposal === 'object' && result.proposal.content 
+        ? result.proposal.content 
+        : result.proposal;
+
+      updatedSections[index].content = newContent;
+      setProposalSections(updatedSections);
+      
+      // Auto-save the update
+      await updateDoc(doc(db, 'proposals', selectedProposal.id), {
+        content: updatedSections.map(s => `${s.title}\n${s.content}`).join('\n\n'),
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error("Error regenerating section:", error);
+      alert("Failed to regenerate section.");
+    } finally {
+      setIsRegeneratingSection(null);
+    }
+  };
+
+  const copySectionToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    // Could add a toast here
+  };
+
+  const handleSectionUpdate = (index, newContent) => {
+    const updatedSections = [...proposalSections];
+    updatedSections[index].content = newContent;
+    setProposalSections(updatedSections);
+  };
+
+  useEffect(() => {
+    if (selectedProposal) {
+      setProposalSections(parseProposal(selectedProposal.content));
+    } else {
+      setProposalSections([]);
+    }
+  }, [selectedProposal]);
 
   const handleDelete = async (id, e) => {
     if (e) e.stopPropagation();
@@ -196,10 +344,19 @@ const Dashboard = ({ user }) => {
     }
   };
 
-  const filteredProposals = proposals.filter(p => 
-    p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.clientName.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredProposals = proposals.filter(p => {
+    const matchesSearch = p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.clientName.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    // Ensure proposal has content before showing it
+    const hasContent = p.content && (
+      typeof p.content === 'object' 
+        ? Object.keys(p.content).length > 0 
+        : p.content.trim().length > 0
+    );
+    
+    return matchesSearch && hasContent;
+  });
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: 'var(--background)', display: 'flex', flexDirection: 'column' }}>
@@ -236,75 +393,185 @@ const Dashboard = ({ user }) => {
       <main className="container" style={{ padding: '2rem 0', flex: 1 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(400px, 450px) 1fr', gap: '2.5rem', alignItems: 'start' }}>
           
-          {/* Left: Input Form Card */}
+          {/* Left: Input Form Card (Wizard) */}
           <div className="card" style={{ position: 'sticky', top: '5rem' }}>
-            <div style={{ marginBottom: '2rem' }}>
-              <h3 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Create Proposal</h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Fill in the details to generate an AI proposal.</p>
+            <div style={{ marginBottom: '1.5rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <h3 style={{ fontSize: '1.5rem', margin: 0 }}>Create Proposal</h3>
+                <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--accent)', background: 'rgba(79, 70, 229, 0.1)', padding: '0.25rem 0.75rem', borderRadius: '1rem' }}>
+                  Step {currentStep} of 3
+                </span>
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+                {currentStep === 1 && "Let's start with the basics."}
+                {currentStep === 2 && "Tell us about the project."}
+                {currentStep === 3 && "Final details for the perfect proposal."}
+              </p>
+              
+              {/* Progress Bar */}
+              <div style={{ width: '100%', height: '6px', background: 'var(--border)', borderRadius: '3px', marginTop: '1rem', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${(currentStep / 3) * 100}%`, background: 'var(--accent-gradient)', transition: 'width 0.3s ease' }} />
+              </div>
             </div>
 
-            <div style={{ display: 'grid', gap: '1.25rem' }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div className="form-group">
-                  <label style={labelStyle}>Proposal Title</label>
-                  <div style={inputWrapperStyle}>
-                    <Briefcase size={16} style={iconStyle} />
-                    <input style={inputStyle} name="title" value={formData.title} onChange={handleInputChange} placeholder="e.g. UX Audit" />
+            <div style={{ display: 'grid', gap: '1.25rem', minHeight: '340px' }}>
+              {isGenerating ? (
+                <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', textAlign: 'center', gap: '1.5rem', padding: '2rem 0' }}>
+                  <div style={{ position: 'relative', width: '80px', height: '80px' }}>
+                    <div className="loader-ring"></div>
+                    <div className="loader-ring" style={{ animationDelay: '-0.5s', width: '60px', height: '60px', top: '10px', left: '10px' }}></div>
+                    <FileText size={32} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: 'var(--accent)' }} />
+                  </div>
+                  <div>
+                    <h4 className="animate-pulse" style={{ fontSize: '1.1rem', marginBottom: '0.5rem', color: 'var(--accent)' }}>
+                      {loadingMessages[generationPhase]}
+                    </h4>
+                    <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>AI is working its magic...</p>
+                  </div>
+                  <div style={{ width: '100%', maxWidth: '200px', height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
+                    <div style={{ 
+                      height: '100%', 
+                      width: `${((generationPhase + 1) / 3) * 100}%`, 
+                      background: 'var(--accent-gradient)', 
+                      transition: 'width 0.5s ease' 
+                    }} />
                   </div>
                 </div>
-                <div className="form-group">
-                  <label style={labelStyle}>Client Name</label>
-                  <div style={inputWrapperStyle}>
-                    <User size={16} style={iconStyle} />
-                    <input style={inputStyle} name="clientName" value={formData.clientName} onChange={handleInputChange} placeholder="e.g. Acme Inc" />
-                  </div>
-                </div>
-              </div>
+              ) : (
+                <>
+                  {/* Step 1 */}
+                  {currentStep === 1 && (
+                    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', height: '100%' }}>
+                      <div className="form-group">
+                        <label style={labelStyle}>Proposal Title</label>
+                        <div style={inputWrapperStyle}>
+                          <Briefcase size={16} style={iconStyle} />
+                          <input style={inputStyle} name="title" value={formData.title} onChange={handleInputChange} placeholder="e.g. Complete E-Commerce Redesign" />
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label style={labelStyle}>Client Name</label>
+                        <div style={inputWrapperStyle}>
+                          <User size={16} style={iconStyle} />
+                          <input style={inputStyle} name="clientName" value={formData.clientName} onChange={handleInputChange} placeholder="e.g. Acme Corp" />
+                        </div>
+                      </div>
+                      
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
+                        <button 
+                          className="btn btn-primary" 
+                          onClick={handleNextStep} 
+                          disabled={!formData.title || !formData.clientName}
+                        >
+                          Next Step <ChevronRight size={16} style={{ marginLeft: '0.5rem' }} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-              <div className="form-group">
-                <label style={labelStyle}>Project Category</label>
-                <div style={inputWrapperStyle}>
-                  <Layers size={16} style={iconStyle} />
-                  <select style={inputStyle} name="projectType" value={formData.projectType} onChange={handleInputChange}>
-                    <option>Freelance</option>
-                    <option>Business</option>
-                    <option>Marketing</option>
-                    <option>Software Development</option>
-                  </select>
-                </div>
-              </div>
+                  {/* Step 2 */}
+                  {currentStep === 2 && (
+                    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', height: '100%' }}>
+                      <div className="form-group">
+                        <label style={labelStyle}>Project Category</label>
+                        <div style={inputWrapperStyle}>
+                          <Layers size={16} style={iconStyle} />
+                          <select style={inputStyle} name="projectType" value={formData.projectType} onChange={handleInputChange}>
+                            <option>General Proposal</option>
+                            <option>Freelance Proposal</option>
+                            <option>Architecture Proposal</option>
+                            <option>Interior Design Proposal</option>
+                            <option>Web Development Proposal</option>
+                            <option>Digital Marketing Proposal</option>
+                            <option>Construction Proposal</option>
+                          </select>
+                        </div>
+                      </div>
 
-              <div className="form-group">
-                <label style={labelStyle}>Description</label>
-                <textarea style={{ ...inputStyle, height: '100px', padding: '0.75rem' }} name="description" value={formData.description} onChange={handleInputChange} placeholder="Describe the project goal..." />
-              </div>
+                      <div className="form-group">
+                        <label style={labelStyle}>Project Description</label>
+                        <textarea 
+                          style={{ ...inputStyle, height: '120px', padding: '0.75rem', resize: 'none' }} 
+                          name="description" 
+                          value={formData.description} 
+                          onChange={handleInputChange} 
+                          placeholder="e.g. A complete overhaul of the existing platform focusing on modern UI and better conversion..." 
+                        />
+                      </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                <div className="form-group">
-                  <label style={labelStyle}>Timeline</label>
-                  <div style={inputWrapperStyle}>
-                    <Clock size={16} style={iconStyle} />
-                    <input style={inputStyle} name="timeline" value={formData.timeline} onChange={handleInputChange} placeholder="e.g. 4 weeks" />
-                  </div>
-                </div>
-                <div className="form-group">
-                  <label style={labelStyle}>Budget</label>
-                  <div style={inputWrapperStyle}>
-                    <DollarSign size={16} style={iconStyle} />
-                    <input style={inputStyle} name="budget" value={formData.budget} onChange={handleInputChange} placeholder="Optional" />
-                  </div>
-                </div>
-              </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 'auto', paddingTop: '1rem' }}>
+                        <button className="btn btn-outline" onClick={handlePrevStep}>Back</button>
+                        <button 
+                          className="btn btn-primary" 
+                          onClick={handleNextStep}
+                          disabled={!formData.description}
+                        >
+                          Next Step <ChevronRight size={16} style={{ marginLeft: '0.5rem' }} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-              <button
-                className="btn btn-primary"
-                onClick={handleGenerate}
-                disabled={isGenerating}
-                style={{ width: '100%', marginTop: '1rem', height: '48px', fontSize: '1rem' }}
-              >
-                {isGenerating ? <Loader className="spin" size={20} /> : <Send size={20} />}
-                {isGenerating ? 'Crafting with AI...' : 'Generate Proposal'}
-              </button>
+                  {/* Step 3 */}
+                  {currentStep === 3 && (
+                    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', height: '100%' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div className="form-group">
+                          <label style={labelStyle}>Timeline</label>
+                          <div style={inputWrapperStyle}>
+                            <Clock size={16} style={iconStyle} />
+                            <input style={inputStyle} name="timeline" value={formData.timeline} onChange={handleInputChange} placeholder="e.g. 6-8 Weeks" />
+                          </div>
+                        </div>
+                        <div className="form-group">
+                          <label style={labelStyle}>Budget (Optional)</label>
+                          <div style={inputWrapperStyle}>
+                            <DollarSign size={16} style={iconStyle} />
+                            <input style={inputStyle} name="budget" value={formData.budget} onChange={handleInputChange} placeholder="e.g. $15,000" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="form-group">
+                        <label style={labelStyle}>Proposal Tone</label>
+                        <div style={inputWrapperStyle}>
+                          <MessageSquare size={16} style={iconStyle} />
+                          <select style={inputStyle} name="tone" value={formData.tone} onChange={handleInputChange}>
+                            <option>Professional</option>
+                            <option>Formal</option>
+                            <option>Friendly</option>
+                            <option>Premium / High-end</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="form-group">
+                        <label style={labelStyle}>Additional Notes (Optional)</label>
+                        <textarea 
+                          style={{ ...inputStyle, height: '80px', padding: '0.75rem', resize: 'none' }} 
+                          name="additionalNotes" 
+                          value={formData.additionalNotes} 
+                          onChange={handleInputChange} 
+                          placeholder="Any specific requests or conditions?" 
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '1rem', marginTop: 'auto', paddingTop: '1rem' }}>
+                        <button className="btn btn-outline" onClick={handlePrevStep} style={{ width: '30%' }}>Back</button>
+                        <button
+                          className="btn btn-primary"
+                          onClick={handleGenerate}
+                          disabled={isGenerating}
+                          style={{ width: '70%', height: '48px', fontSize: '1rem', background: 'var(--accent-gradient)', border: 'none', color: 'white' }}
+                        >
+                          {isGenerating ? <Loader className="spin" size={20} /> : <Send size={20} />}
+                          {isGenerating ? 'Crafting with AI...' : 'Generate Instantly'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
@@ -329,14 +596,40 @@ const Dashboard = ({ user }) => {
                 <p style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>Fetching your masterpieces...</p>
               </div>
             ) : filteredProposals.length === 0 ? (
-              <div className="card" style={{ textAlign: 'center', padding: '5rem', borderStyle: 'dashed' }}>
-                <div style={{ background: 'var(--background)', width: '64px', height: '64px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}>
-                  <PlusCircle size={32} style={{ color: 'var(--text-muted)' }} />
+              <div className="card" style={{ 
+                textAlign: 'center', 
+                padding: '6rem 2rem', 
+                borderStyle: 'dashed', 
+                background: 'rgba(255, 255, 255, 0.4)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}>
+                <div style={{ 
+                  background: 'white', 
+                  width: '80px', 
+                  height: '80px', 
+                  borderRadius: '24px', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  marginBottom: '1.5rem',
+                  boxShadow: 'var(--shadow-md)'
+                }}>
+                  <PlusCircle size={40} style={{ color: 'var(--accent)' }} />
                 </div>
-                <h4>No proposals found</h4>
-                <p style={{ color: 'var(--text-muted)', maxWidth: '300px', margin: '0.5rem auto' }}>
-                  Generate your first proposal using the form on the left.
+                <h4 style={{ fontSize: '1.25rem', marginBottom: '0.75rem' }}>Start Your Journey</h4>
+                <p style={{ color: 'var(--text-muted)', maxWidth: '320px', margin: '0 auto', lineHeight: '1.6' }}>
+                  Create your first professional proposal in seconds using our AI-powered wizard. 
                 </p>
+                <button 
+                  className="btn btn-primary" 
+                  onClick={() => setCurrentStep(1)} 
+                  style={{ marginTop: '2rem', padding: '0.75rem 2rem' }}
+                >
+                  Create Now
+                </button>
               </div>
             ) : (
               <div style={{ display: 'grid', gap: '1rem' }}>
@@ -378,70 +671,137 @@ const Dashboard = ({ user }) => {
         </div>
       </main>
 
-      {/* Modern Modal for viewing proposal */}
       {selectedProposal && (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(15, 23, 42, 0.4)', backdropFilter: 'blur(4px)',
+          backgroundColor: 'rgba(15, 23, 42, 0.4)', backdropFilter: 'blur(12px)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           zIndex: 100, padding: '2rem'
         }}>
-          <div className="card" style={{ maxWidth: '900px', width: '100%', maxHeight: '90vh', overflowY: 'auto', padding: 0, border: 'none', boxShadow: 'var(--shadow-premium)' }}>
-            <div className="glass" style={{ padding: '1.5rem 2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 10 }}>
+          <div className="card animate-fade-in" style={{ maxWidth: '1000px', width: '100%', height: '90vh', display: 'flex', flexDirection: 'column', padding: 0, border: 'none', boxShadow: 'var(--shadow-premium)', overflow: 'hidden' }}>
+            
+            {/* Header */}
+            <div className="glass" style={{ padding: '1.5rem 2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0, zIndex: 10 }}>
               <div>
-                <h2 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>{selectedProposal.title}</h2>
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Client: {selectedProposal.clientName}</p>
+                <h2 style={{ fontSize: '1.5rem', marginBottom: '0.25rem', letterSpacing: '-0.02em' }}>{selectedProposal.title}</h2>
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <User size={14} /> {selectedProposal.clientName}
+                  </span>
+                  <span style={{ width: '4px', height: '4px', background: 'var(--border)', borderRadius: '50%' }}></span>
+                  <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <Clock size={14} /> Generated on {selectedProposal.createdAt?.toDate().toLocaleDateString()}
+                  </span>
+                </div>
               </div>
               <div style={{ display: 'flex', gap: '0.75rem' }}>
-                {!isEditing ? (
-                  <>
-                    <button className="btn btn-outline" onClick={handleEditClick}>
-                      <FileEdit size={16} /> Edit
-                    </button>
-                    <button className="btn btn-primary" onClick={exportToPDF}>
-                      <Download size={16} /> Export PDF
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button className="btn btn-primary" onClick={handleSaveEdit} disabled={isSaving}>
-                      {isSaving ? <Loader className="spin" size={16} /> : <Check size={16} />}
-                      Save Changes
-                    </button>
-                    <button className="btn btn-outline" onClick={() => setIsEditing(false)}>
-                      <X size={16} /> Cancel
-                    </button>
-                  </>
-                )}
+                <button className="btn btn-outline" onClick={exportToPDF} style={{ padding: '0.625rem 1rem' }}>
+                  <Download size={16} /> Export PDF
+                </button>
                 <button 
                   onClick={() => setSelectedProposal(null)}
-                  style={{ background: 'var(--background)', width: '36px', height: '36px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}
+                  style={{ background: 'var(--background)', width: '40px', height: '40px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', transition: 'all 0.2s' }}
                 >
                   <X size={20} />
                 </button>
               </div>
             </div>
 
-            <div style={{ padding: '2.5rem' }}>
-              {isEditing ? (
-                <textarea
-                  style={{ 
-                    ...inputStyle, 
-                    height: '500px', 
-                    fontSize: '1rem', 
-                    lineHeight: '1.7',
-                    padding: '1.5rem',
-                    backgroundColor: 'var(--background)',
-                    border: '1px solid var(--border)'
-                  }}
-                  value={editedContent}
-                  onChange={(e) => setEditedContent(e.target.value)}
-                />
-              ) : (
-                <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.8', color: 'var(--text)', fontSize: '1.05rem' }}>
-                  {selectedProposal.content}
-                </div>
-              )}
+            {/* Document Content */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '3rem 4rem', backgroundColor: '#fff' }}>
+              <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+                {proposalSections.length > 0 ? (
+                  proposalSections.map((section, idx) => (
+                    <div key={idx} className="proposal-section" style={{ 
+                      marginBottom: '2.5rem', 
+                      position: 'relative',
+                      padding: '1rem',
+                      borderRadius: '8px',
+                      marginLeft: '-1rem',
+                      marginRight: '-1rem',
+                      transition: 'all 0.2s ease'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                        <h4 style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--accent)', fontWeight: 800 }}>
+                          {idx + 1}. {section.title}
+                        </h4>
+                        <div className="section-actions" style={{ display: 'flex', gap: '0.5rem', opacity: 0, transition: 'opacity 0.2s' }}>
+                          <button 
+                            onClick={() => copySectionToClipboard(section.content)}
+                            className="btn-icon" 
+                            title="Copy Section"
+                          >
+                            <Copy size={14} />
+                          </button>
+                          <button 
+                            onClick={() => handleRegenerateSection(idx)}
+                            className="btn-icon" 
+                            disabled={isRegeneratingSection === idx}
+                            title="Regenerate Section"
+                          >
+                            <RefreshCcw size={14} className={isRegeneratingSection === idx ? 'spin' : ''} />
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {editingSectionIndex === idx ? (
+                        <textarea
+                          autoFocus
+                          style={{ 
+                            width: '100%', 
+                            minHeight: '100px', 
+                            border: 'none', 
+                            outline: 'none', 
+                            fontSize: '1.05rem', 
+                            lineHeight: '1.7', 
+                            color: 'var(--text)',
+                            fontFamily: 'inherit',
+                            resize: 'none',
+                            backgroundColor: 'rgba(79, 70, 229, 0.03)',
+                            padding: '0.5rem',
+                            borderRadius: '4px'
+                          }}
+                          value={section.content}
+                          onChange={(e) => handleSectionUpdate(idx, e.target.value)}
+                          onBlur={async () => {
+                            setEditingSectionIndex(null);
+                            // Save to DB when blur
+                            await updateDoc(doc(db, 'proposals', selectedProposal.id), {
+                              content: proposalSections.map(s => `${s.title}\n${s.content}`).join('\n\n'),
+                              updatedAt: serverTimestamp()
+                            });
+                          }}
+                        />
+                      ) : (
+                        <div 
+                          onClick={() => setEditingSectionIndex(idx)}
+                          style={{ 
+                            fontSize: '1.05rem', 
+                            lineHeight: '1.8', 
+                            color: 'var(--text)', 
+                            whiteSpace: 'pre-wrap',
+                            cursor: 'text',
+                            minHeight: '20px'
+                          }}
+                        >
+                          {section.content || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Click to add content...</span>}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '5rem' }}>
+                    <Loader className="spin" size={32} style={{ color: 'var(--accent)' }} />
+                    <p style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>Preparing document layout...</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer Status */}
+            <div className="glass" style={{ padding: '0.75rem 2.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <span>Click any section to edit inline. Changes save automatically.</span>
+              <span>{proposalSections.length} Sections</span>
             </div>
           </div>
         </div>
@@ -459,6 +819,30 @@ const Dashboard = ({ user }) => {
               <button className="btn btn-outline" style={{ flex: 1 }} onClick={() => setDeletingId(null)}>Cancel</button>
             </div>
           </div>
+        </div>
+      )}
+      {/* Success Feedback Notification */}
+      {showSuccess && (
+        <div className="animate-fade-in" style={{
+          position: 'fixed',
+          bottom: '2rem',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'var(--primary)',
+          color: 'white',
+          padding: '1rem 2rem',
+          borderRadius: '50px',
+          boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '1rem',
+          zIndex: 1000,
+          border: '1px solid rgba(255,255,255,0.1)'
+        }}>
+          <div style={{ background: 'var(--success)', width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Check size={14} color="white" strokeWidth={3} />
+          </div>
+          <span style={{ fontWeight: 600, letterSpacing: '0.01em' }}>Your proposal is ready!</span>
         </div>
       )}
     </div>
